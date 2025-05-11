@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI语音助手</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @keyframes wave {
+            0% {
+                transform: scaleY(1);
+            }
+
+            50% {
+                transform: scaleY(0.5);
+            }
+
+            100% {
+                transform: scaleY(1);
+            }
+        }
+
+        .wave-animation {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        .wave-bar {
+            width: 3px;
+            height: 20px;
+            background-color: #3B82F6;
+            animation: wave 1s ease-in-out infinite;
+        }
+
+        .wave-bar:nth-child(2) {
+            animation-delay: 0.1s;
+        }
+
+        .wave-bar:nth-child(3) {
+            animation-delay: 0.2s;
+        }
+
+        .wave-bar:nth-child(4) {
+            animation-delay: 0.3s;
+        }
+
+        .wave-bar:nth-child(5) {
+            animation-delay: 0.4s;
+        }
+
+        .message-bubble {
+            position: relative;
+            margin-bottom: 1rem;
+            padding: 1rem;
+            border-radius: 1rem;
+            max-width: 80%;
+            animation: fadeIn 0.3s ease-in-out;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .user-bubble {
+            background-color: #3B82F6;
+            color: white;
+            margin-left: auto;
+            border-bottom-right-radius: 0.25rem;
+        }
+
+        .bot-bubble {
+            background-color: #F3F4F6;
+            color: #1F2937;
+            margin-right: auto;
+            border-bottom-left-radius: 0.25rem;
+        }
+
+        .typing-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background-color: #F3F4F6;
+            border-radius: 1rem;
+            width: fit-content;
+            margin-bottom: 1rem;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            background-color: #6B7280;
+            border-radius: 50%;
+            animation: typing 1s infinite ease-in-out;
+        }
+
+        .dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes typing {
+
+            0%,
+            100% {
+                transform: translateY(0);
+            }
+
+            50% {
+                transform: translateY(-5px);
+            }
+        }
+    </style>
+</head>
+
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <div class="bg-white rounded-lg shadow-sm p-4 mb-6">
+            <div id="chatContainer" class="h-[500px] overflow-y-auto mb-4 space-y-4">
+                <div class="message-bubble bot-bubble">
+                    <div class="flex items-start space-x-2">
+                        <div class="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+                            <i class="fas fa-robot text-blue-500"></i>
+                        </div>
+                        <div>
+                            <p>您好！我是您的AI助手，请点击麦克风按钮开始对话。</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="statusIndicator" class="hidden">
+                <div class="typing-indicator">
+                    <div class="dot"></div>
+                    <div class="dot"></div>
+                    <div class="dot"></div>
+                </div>
+            </div>
+
+            <div class="flex justify-center items-center space-x-4 pt-4 border-t">
+                <button id="recordBtn"
+                    class="w-16 h-16 rounded-full bg-blue-500 hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors duration-200 flex items-center justify-center group">
+                    <i
+                        class="fas fa-microphone text-white text-xl group-hover:scale-110 transition-transform duration-200"></i>
+                </button>
+                <div id="status" class="text-sm text-gray-600">
+                    准备就绪
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let ws = null;
+        let audioContext = null;
+        let audioQueue = [];
+        let isPlaying = false;
+
+        function initWebSocket() {
+            const wsUrl = `ws://127.0.0.1:8001/ws/chat`;
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                updateStatus('已连接，可以开始录音');
+            };
+
+            ws.onclose = () => {
+                updateStatus('连接已断开，请刷新页面重试');
+            };
+
+            ws.onerror = (error) => {
+                updateStatus('连接错误，请刷新页面重试');
+            };
+
+            ws.onmessage = async (event) => {
+                try {
+                    if (event.data instanceof Blob) {
+                        await playAudioResponse(event.data);
+                        return;
+                    }
+
+                    const data = JSON.parse(event.data);
+                    switch (data.type) {
+                        case 'transcription':
+                            updateStatus(`识别结果: ${data.text}`);
+                            addMessage(data.text, 'user');
+                            break;
+
+                        case 'response':
+                            updateStatus('收到AI回复');
+                            addMessage(data.text, 'bot');
+                            break;
+
+                        case 'error':
+                            updateStatus(`错误: ${data.error}`);
+                            break;
+
+                        case 'ping':
+                            ws.send(JSON.stringify({ type: 'pong' }));
+                            break;
+                    }
+                } catch (e) {
+                    updateStatus('处理消息出错');
+                }
+            };
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = async () => {
+                    try {
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
+                        const wavBlob = await convertToWav(audioBlob);
+                        ws.send(await wavBlob.arrayBuffer());
+                    } catch (error) {
+                        updateStatus('处理音频失败');
+                    }
+                };
+
+                mediaRecorder.start(100);
+                isRecording = true;
+                updateStatus('正在录音...');
+
+            } catch (error) {
+                updateStatus('无法访问麦克风');
+            }
+        }
+
+        async function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                updateStatus('正在处理音频...');
+            }
+            isRecording = false;
+        }
+
+        async function convertToWav(audioBlob) {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const audioData = await audioBlob.arrayBuffer();
+            const audioBuffer = await audioContext.decodeAudioData(audioData);
+
+            const wavData = audioBufferToWav(audioBuffer);
+            return new Blob([wavData], { type: 'audio/wav' });
+        }
+
+        function audioBufferToWav(audioBuffer) {
+            const numChannels = audioBuffer.numberOfChannels;
+            const sampleRate = audioBuffer.sampleRate;
+            const format = 1;
+            const bitDepth = 16;
+
+            const bytesPerSample = bitDepth / 8;
+            const blockAlign = numChannels * bytesPerSample;
+
+            const data = audioBuffer.getChannelData(0);
+            const samples = new Int16Array(data.length);
+
+            for (let i = 0; i < data.length; i++) {
+                const s = Math.max(-1, Math.min(1, data[i]));
+                samples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+
+            const wavBuffer = new ArrayBuffer(44 + samples.length * 2);
+            const view = new DataView(wavBuffer);
+
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + samples.length * 2, true);
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, format, true);
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * blockAlign, true);
+            view.setUint16(32, blockAlign, true);
+            view.setUint16(34, bitDepth, true);
+            writeString(view, 36, 'data');
+            view.setUint32(40, samples.length * 2, true);
+
+            const offset = 44;
+            for (let i = 0; i < samples.length; i++) {
+                view.setInt16(offset + i * 2, samples[i], true);
+            }
+
+            return wavBuffer;
+        }
+
+        function writeString(view, offset, string) {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        }
+
+        async function initAudioContext() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                // 恢复音频上下文（如果被挂起）
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
+                }
+            }
+            return audioContext;
+        }
+
+        async function playAudioResponse(audioBlob) {
+            try {
+                // 初始化音频上下文
+                const ctx = await initAudioContext();
+
+                // 将音频数据添加到队列
+                audioQueue.push(audioBlob);
+
+                // 如果当前没有在播放，开始播放队列
+                if (!isPlaying) {
+                    await playNextInQueue();
+                }
+            } catch (error) {
+                console.error('音频处理失败:', error);
+                updateStatus('音频处理失败，请重试');
+            }
+        }
+
+        async function playNextInQueue() {
+            if (audioQueue.length === 0) {
+                isPlaying = false;
+                updateStatus('准备就绪');
+                return;
+            }
+
+            isPlaying = true;
+            const audioBlob = audioQueue.shift();
+
+            try {
+                const ctx = await initAudioContext();
+
+                // 创建音频源
+                const source = ctx.createBufferSource();
+
+                // 解码音频数据
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+                source.buffer = audioBuffer;
+
+                // 创建音频处理节点
+                const gainNode = ctx.createGain();
+                gainNode.gain.value = 1.2; // 稍微提高音量
+
+                // 创建压缩器节点，使声音更清晰
+                const compressor = ctx.createDynamicsCompressor();
+                compressor.threshold.value = -24;
+                compressor.knee.value = 30;
+                compressor.ratio.value = 12;
+                compressor.attack.value = 0.003;
+                compressor.release.value = 0.25;
+
+                // 连接节点
+                source.connect(gainNode);
+                gainNode.connect(compressor);
+                compressor.connect(ctx.destination);
+
+                // 添加事件处理
+                source.onended = () => {
+                    // 清理资源
+                    source.disconnect();
+                    gainNode.disconnect();
+                    compressor.disconnect();
+
+                    // 播放队列中的下一个音频
+                    playNextInQueue();
+                };
+
+                // 开始播放
+                updateStatus('正在播放语音...');
+                source.start(0);
+
+            } catch (error) {
+                console.error('音频播放错误:', error);
+                updateStatus('音频播放失败，尝试备用方案');
+
+                // 尝试使用备用播放方法
+                try {
+                    const audio = new Audio(URL.createObjectURL(audioBlob));
+                    audio.volume = 1.2;
+
+                    // 等待音频加载完成
+                    await new Promise((resolve, reject) => {
+                        audio.addEventListener('canplaythrough', resolve, { once: true });
+                        audio.addEventListener('error', reject, { once: true });
+                    });
+
+                    await audio.play();
+
+                    audio.onended = () => {
+                        URL.revokeObjectURL(audio.src);
+                        playNextInQueue();
+                    };
+                } catch (fallbackError) {
+                    console.error('备用播放方法也失败:', fallbackError);
+                    updateStatus('音频播放失败，请刷新页面重试');
+                    // 清空队列
+                    audioQueue = [];
+                    isPlaying = false;
+                }
+            }
+        }
+
+        function updateStatus(text, showIndicator = false) {
+            const statusEl = document.getElementById('status');
+            const statusIndicator = document.getElementById('statusIndicator');
+
+            statusEl.textContent = text;
+            statusIndicator.classList.toggle('hidden', !showIndicator);
+        }
+
+        function addMessage(text, sender) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message-bubble');
+            messageDiv.classList.add(sender === 'user' ? 'user-bubble' : 'bot-bubble');
+
+            const icon = sender === 'user' ? 'user' : 'robot';
+            messageDiv.innerHTML = `
+                <div class="flex items-start space-x-2">
+                    <div class="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+                        <i class="fas fa-${icon} text-blue-500"></i>
+                    </div>
+                    <div>
+                        <p>${text}</p>
+                    </div>
+                </div>
+            `;
+
+            const chatContainer = document.getElementById('chatContainer');
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        document.getElementById('recordBtn').addEventListener('click', async () => {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                updateStatus('连接已断开，请刷新页面重试');
+                return;
+            }
+
+            const recordBtn = document.getElementById('recordBtn');
+
+            if (!isRecording) {
+                recordBtn.classList.remove('bg-blue-500', 'hover:bg-blue-600');
+                recordBtn.classList.add('bg-red-500', 'hover:bg-red-600');
+                recordBtn.innerHTML = `
+                    <div class="wave-animation">
+                        <div class="wave-bar"></div>
+                        <div class="wave-bar"></div>
+                        <div class="wave-bar"></div>
+                        <div class="wave-bar"></div>
+                        <div class="wave-bar"></div>
+                    </div>
+                `;
+                await startRecording();
+            } else {
+                recordBtn.classList.remove('bg-red-500', 'hover:bg-red-600');
+                recordBtn.classList.add('bg-blue-500', 'hover:bg-blue-600');
+                recordBtn.innerHTML = `<i class="fas fa-microphone text-white text-xl group-hover:scale-110 transition-transform duration-200"></i>`;
+                await stopRecording();
+            }
+        });
+
+        window.addEventListener('load', () => {
+            initWebSocket();
+        });
+
+        window.addEventListener('beforeunload', () => {
+            if (audioContext) {
+                audioContext.close();
+            }
+            if (ws) {
+                ws.close();
+            }
+        });
+
+        // 添加音频上下文恢复机制
+        document.addEventListener('click', async () => {
+            if (audioContext && audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
+        }, { once: true });
+    </script>
+</body>
+
+</html>
